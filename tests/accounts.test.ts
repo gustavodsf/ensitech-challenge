@@ -58,4 +58,27 @@ describe("Accounts API", () => {
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(2);
   });
+
+  it("records an initial deposit ledger entry when an account is created", async () => {
+    const ledgerApp = createApp();
+    const created = await request(ledgerApp).post("/accounts").send({ balance: 100 });
+
+    const res = await request(ledgerApp).get(`/accounts/${created.body.id}/ledger`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0]).toMatchObject({
+      accountId: created.body.id,
+      type: "CREDIT",
+      amount: 100,
+      balanceAfter: 100,
+      reason: "INITIAL_DEPOSIT",
+    });
+  });
+
+  it("returns 404 for the ledger of an unknown account id", async () => {
+    const res = await request(app).get("/accounts/does-not-exist/ledger");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("NotFoundError");
+  });
 });

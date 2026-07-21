@@ -121,6 +121,44 @@ Errors:
 Response `200`: array of transfers (same shape as above), in the order they
 were made.
 
+### Get an account's ledger
+
+`GET /accounts/:accountId/ledger`
+
+Returns the full, chronological, immutable history of balance movements for
+an account — one entry for the initial deposit made at account creation,
+and one `DEBIT`/`CREDIT` entry per transfer it was involved in. The
+account's current balance (returned by the endpoints above) is always the
+`balanceAfter` of its most recent entry here.
+
+Response `200`:
+
+```json
+[
+  {
+    "id": "1a2b...",
+    "accountId": "b3f1...",
+    "type": "CREDIT",
+    "amount": 100,
+    "balanceAfter": 100,
+    "reason": "INITIAL_DEPOSIT",
+    "createdAt": "2026-07-21T10:00:00.000Z"
+  },
+  {
+    "id": "4c5d...",
+    "accountId": "b3f1...",
+    "type": "DEBIT",
+    "amount": 30,
+    "balanceAfter": 70,
+    "reason": "TRANSFER",
+    "transferId": "7e21...",
+    "createdAt": "2026-07-21T10:01:00.000Z"
+  }
+]
+```
+
+Errors: `404` if the account does not exist.
+
 ### Health check
 
 `GET /health` → `200 { "status": "ok" }`
@@ -140,14 +178,22 @@ were made.
   (e.g. cents) or a decimal library to avoid floating-point rounding issues;
   this is called out here rather than solved, to keep the implementation
   minimal as requested.
+- **Ledger-based balances**: account balances are never stored or mutated
+  directly. Every balance change — the initial deposit at account creation,
+  and each leg of a transfer — is appended as an immutable `LedgerEntry`
+  (`CREDIT`/`DEBIT`, with the resulting `balanceAfter`) rather than
+  overwriting a `balance` field. An account's current balance is simply the
+  `balanceAfter` of its most recent entry, and `GET /accounts/:id/ledger`
+  exposes the full history. This gives every account a real, auditable
+  trail of how its balance was reached, instead of just the latest number.
 - **Consistency without a database transaction**: `TransferService.transfer`
-  reads both accounts, validates, and mutates both balances synchronously,
-  with no `await` in between. Since Node.js runs JavaScript on a single
-  thread, no other request can interleave in the middle of that sequence,
-  so the in-memory store never observes a half-applied transfer. This
-  guarantee holds only for the in-memory store; see the deployment section
-  below for how this maps to a real conditional-write transaction in
-  DynamoDB.
+  reads both accounts' derived balances, validates, and appends both ledger
+  entries synchronously, with no `await` in between. Since Node.js runs
+  JavaScript on a single thread, no other request can interleave in the
+  middle of that sequence, so no two transfers can read a stale balance and
+  both succeed against it. This guarantee holds only for the in-memory
+  store; see the deployment section below for how this maps to a real
+  conditional-write transaction in DynamoDB.
 - **Layering**: the code is split into `domain` (types/errors), `store`
   (the only place that knows about the storage mechanism), `services`
   (business logic, storage-agnostic), and `http` (Express routers/
@@ -197,23 +243,33 @@ keep cold-start bundles small and deployments independent.
 ### Persisting data: DynamoDB
 
 Replace `InMemoryStore` with a `DynamoDbStore` implementing the same
-interface (`saveAccount`, `getAccount`, `listAccounts`, `saveTransfer`,
-`listTransfers`) — no other code needs to change.
+interface (`saveAccountMeta`, `getAccountMeta`, `listAccountMetas`,
+`appendLedgerEntry`, `getBalance`, `getLedgerEntries`, `saveTransfer`,
+`listTransfers`) — no other code needs to change, since the ledger model
+already matches how an append-only, auditable datastore should be designed.
 
-- **Accounts table**: partition key `id`. Store `balance` and `createdAt`.
+- **Accounts table**: partition key `id`. Stores only metadata
+  (`createdAt`) — no `balance` field, consistent with the ledger design.
+- **Ledger table**: partition key `accountId`, sort key `createdAt` (or a
+  monotonically increasing sequence number) so an account's entries can be
+  queried in order with a single `Query`. The most recent item's
+  `balanceAfter` is the account's current balance; a GSI on `transferId`
+  lets you fetch both legs of a given transfer.
 - **Transfers table**: partition key `id`; optionally a GSI on
   `fromAccountId`/`toAccountId` + `createdAt` for history queries.
 - **Atomic transfers**: the in-memory implementation relies on Node's
   single-threaded execution to keep a transfer's read-check-write atomic.
   DynamoDB cannot rely on that across concurrent Lambda invocations, so the
-  transfer should be implemented as a `TransactWriteItems` call with two
-  conditional updates: decrement the source balance with a condition
-  `balance >= :amount` (also guards against a negative balance from
-  concurrent transfers), and increment the destination balance. If the
-  condition fails, DynamoDB rejects the whole transaction, which the
-  service layer maps back to the existing `ValidationError`
-  (insufficient funds). This preserves the API's consistency guarantees
-  without any application-level locking.
+  transfer should be implemented as a `TransactWriteItems` call that
+  conditionally inserts the DEBIT ledger entry only if the computed
+  `balanceAfter` is `>= 0` (guarding against a negative balance from
+  concurrent transfers) alongside inserting the CREDIT entry and the
+  transfer record. If the condition fails, DynamoDB rejects the whole
+  transaction, which the service layer maps back to the existing
+  `ValidationError` (insufficient funds). Because ledger entries are
+  never updated in place — only ever appended — this transaction is a pure
+  insert, which avoids the lost-update problems that plague
+  read-modify-write balance columns under concurrency.
 
 ### Scalability, concurrency, error handling, logging, monitoring
 

@@ -30,5 +30,13 @@ export function createAccountsRouter(accountService: AccountService): Router {
     })
   );
 
+  router.get(
+    "/:accountId/ledger",
+    asyncHandler(async (req, res) => {
+      const ledger = accountService.getLedger(req.params.accountId);
+      res.status(200).json(ledger);
+    })
+  );
+
   return router;
 }

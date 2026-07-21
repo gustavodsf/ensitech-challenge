@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
 import { InMemoryStore } from "../store/InMemoryStore";
-import { Transfer } from "../domain/models";
+import { LedgerEntry, Transfer } from "../domain/models";
 import { NotFoundError, ValidationError } from "../domain/errors";
 
 export class TransferService {
@@ -9,10 +9,14 @@ export class TransferService {
   /**
    * Transfers `amount` from `fromAccountId` to `toAccountId`.
    *
-   * The validation, balance checks, and balance mutation happen in a single
-   * synchronous block (no `await` in between), so no other request can be
-   * interleaved mid-transfer on Node's single-threaded event loop. This is
-   * what keeps the balance updates consistent without needing explicit locks.
+   * Rather than mutating a `balance` field, this appends one DEBIT ledger
+   * entry to the source account and one CREDIT entry to the destination
+   * account, both tagged with the same `transferId` so the movement can be
+   * traced from either account's ledger. The validation, balance reads, and
+   * ledger writes happen in a single synchronous block (no `await` in
+   * between), so no other request can be interleaved mid-transfer on
+   * Node's single-threaded event loop. This is what keeps the derived
+   * balances consistent without needing explicit locks.
    */
   transfer(fromAccountId: string, toAccountId: string, amount: number): Transfer {
     if (fromAccountId === toAccountId) {
@@ -22,33 +26,56 @@ export class TransferService {
       throw new ValidationError("Transfer amount must be a positive number");
     }
 
-    const fromAccount = this.store.getAccount(fromAccountId);
-    if (!fromAccount) {
+    const fromMeta = this.store.getAccountMeta(fromAccountId);
+    if (!fromMeta) {
       throw new NotFoundError(`Account '${fromAccountId}' was not found`);
     }
 
-    const toAccount = this.store.getAccount(toAccountId);
-    if (!toAccount) {
+    const toMeta = this.store.getAccountMeta(toAccountId);
+    if (!toMeta) {
       throw new NotFoundError(`Account '${toAccountId}' was not found`);
     }
 
-    if (fromAccount.balance < amount) {
+    const fromBalance = this.store.getBalance(fromAccountId);
+    if (fromBalance < amount) {
       throw new ValidationError(
         `Account '${fromAccountId}' has insufficient funds for this transfer`
       );
     }
+    const toBalance = this.store.getBalance(toAccountId);
 
-    fromAccount.balance -= amount;
-    toAccount.balance += amount;
-    this.store.saveAccount(fromAccount);
-    this.store.saveAccount(toAccount);
+    const transferId = uuidv4();
+    const createdAt = new Date().toISOString();
+
+    const debitEntry: LedgerEntry = {
+      id: uuidv4(),
+      accountId: fromAccountId,
+      type: "DEBIT",
+      amount,
+      balanceAfter: fromBalance - amount,
+      reason: "TRANSFER",
+      transferId,
+      createdAt,
+    };
+    const creditEntry: LedgerEntry = {
+      id: uuidv4(),
+      accountId: toAccountId,
+      type: "CREDIT",
+      amount,
+      balanceAfter: toBalance + amount,
+      reason: "TRANSFER",
+      transferId,
+      createdAt,
+    };
+    this.store.appendLedgerEntry(debitEntry);
+    this.store.appendLedgerEntry(creditEntry);
 
     const transfer: Transfer = {
-      id: uuidv4(),
+      id: transferId,
       fromAccountId,
       toAccountId,
       amount,
-      createdAt: new Date().toISOString(),
+      createdAt,
     };
     this.store.saveTransfer(transfer);
     return transfer;

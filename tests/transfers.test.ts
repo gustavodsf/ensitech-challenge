@@ -111,4 +111,33 @@ describe("Transfers API", () => {
     expect(res.body).toHaveLength(1);
     expect(res.body[0]).toMatchObject({ fromAccountId: fromId, toAccountId: toId, amount: 25 });
   });
+
+  it("records a DEBIT and CREDIT ledger entry on each account for a transfer", async () => {
+    const app = createApp();
+    const fromId = await createAccount(app, 100);
+    const toId = await createAccount(app, 50);
+
+    const transferRes = await request(app)
+      .post("/transfers")
+      .send({ fromAccountId: fromId, toAccountId: toId, amount: 30 });
+
+    const fromLedger = await request(app).get(`/accounts/${fromId}/ledger`);
+    const toLedger = await request(app).get(`/accounts/${toId}/ledger`);
+
+    expect(fromLedger.body).toHaveLength(2);
+    expect(fromLedger.body[1]).toMatchObject({
+      type: "DEBIT",
+      amount: 30,
+      balanceAfter: 70,
+      transferId: transferRes.body.id,
+    });
+
+    expect(toLedger.body).toHaveLength(2);
+    expect(toLedger.body[1]).toMatchObject({
+      type: "CREDIT",
+      amount: 30,
+      balanceAfter: 80,
+      transferId: transferRes.body.id,
+    });
+  });
 });
