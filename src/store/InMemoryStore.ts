@@ -66,4 +66,9 @@ export class InMemoryStore {
   listTransfers(): Transfer[] {
     return [...this.transfers];
   }
+
+  getTransferByFromAccountId(id: string): Transfer[] | undefined {
+    return this.transfers.filter((t) => t.fromAccountId === id);
+  }
+    
 }

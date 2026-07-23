@@ -22,5 +22,15 @@ export function createTransfersRouter(transferService: TransferService): Router 
     })
   );
 
+
+  router.get(
+    "/account/:id",
+    asyncHandler(async (_req, res) => {
+      const { id } = _req.params
+      res.status(200).json(transferService.getTransferByFromAccountId(id));
+    })
+  );
+
+
   return router;
 }

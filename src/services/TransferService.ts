@@ -19,6 +19,11 @@ export class TransferService {
    * balances consistent without needing explicit locks.
    */
   transfer(fromAccountId: string, toAccountId: string, amount: number): Transfer {
+
+    if(process.env.MAX_TRANSFER_AMOUNT && amount > Number(process.env.MAX_TRANSFER_AMOUNT)) {
+      throw new ValidationError(`Transfer amount must be less than U$ ${process.env.MAX_TRANSFER_AMOUNT}`);
+    }
+
     if (fromAccountId === toAccountId) {
       throw new ValidationError("Cannot transfer to the same account");
     }
@@ -83,5 +88,13 @@ export class TransferService {
 
   listTransfers(): Transfer[] {
     return this.store.listTransfers();
+  }
+  
+  getTransferByFromAccountId(id: string): Transfer[] {
+    const transfer = this.store.getTransferByFromAccountId(id);
+    if (!transfer || transfer.length === 0) {
+      throw new NotFoundError(`Using account id '${id}' was not found a transfer`);
+    }
+    return transfer;
   }
 }

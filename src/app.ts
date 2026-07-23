@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express, { Express } from "express";
 import { InMemoryStore } from "./store/InMemoryStore";
 import { AccountService } from "./services/AccountService";
